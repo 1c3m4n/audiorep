@@ -17,6 +17,7 @@ impl Visualizer {
         Self
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &self,
         frame: &mut Frame,
@@ -270,10 +271,7 @@ impl Visualizer {
         };
         let text = format!(
             "q: quit | ↑/↓: navigate | h: {} | +/-: sens | [ ]: decay | {}{}{}",
-            hidden_label,
-            footer_rate_label,
-            rate_part,
-            status_part,
+            hidden_label, footer_rate_label, rate_part, status_part,
         );
         let text_area = centered_rect(area, 120);
         let paragraph = Paragraph::new(text)

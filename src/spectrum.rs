@@ -210,12 +210,12 @@ impl Drop for SpectrumMonitor {
         self.stop.store(true, Ordering::Relaxed);
 
         #[cfg(target_os = "linux")]
-        if let Ok(mut child_pid) = self.child_pid.lock() {
-            if let Some(pid) = child_pid.take() {
-                let _ = Command::new("kill")
-                    .args(["-TERM", &pid.to_string()])
-                    .status();
-            }
+        if let Ok(mut child_pid) = self.child_pid.lock()
+            && let Some(pid) = child_pid.take()
+        {
+            let _ = Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .status();
         }
     }
 }

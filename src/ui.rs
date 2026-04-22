@@ -19,8 +19,6 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 #[cfg(target_os = "macos")]
-use std::process::Command;
-#[cfg(target_os = "macos")]
 use objc2_core_audio::{
     AudioObjectGetPropertyData, AudioObjectID, AudioObjectPropertyAddress,
     AudioObjectSetPropertyData, kAudioDevicePropertyNominalSampleRate,
@@ -31,6 +29,8 @@ use ratatui::{
     Terminal,
     backend::{Backend, CrosstermBackend},
 };
+#[cfg(target_os = "macos")]
+use std::process::Command;
 use tracing::warn;
 
 use crate::error::Result;
@@ -180,44 +180,43 @@ impl Ui {
 
             if has_input
                 && let Event::Key(key) = event::read()?
-                    && key.kind == KeyEventKind::Press {
-                        let visible_len = audio_info.visible_devices(self.show_hidden).len();
+                && key.kind == KeyEventKind::Press
+            {
+                let visible_len = audio_info.visible_devices(self.show_hidden).len();
 
-                        match key.code {
-                            KeyCode::Char('q') | KeyCode::Char('Q') => break,
-                            KeyCode::Up
-                                if self.selected_index > 0 => {
-                                    self.selected_index -= 1;
-                                }
-                            KeyCode::Down
-                                if self.selected_index < visible_len.saturating_sub(1) => {
-                                    self.selected_index += 1;
-                                }
-                            KeyCode::Char('h') | KeyCode::Char('H') => {
-                                self.show_hidden = !self.show_hidden;
-                                self.clamp_selection(&audio_info);
-                            }
-                            KeyCode::Char('-') | KeyCode::Char('_') => {
-                                self.spectrum.adjust_sensitivity(-10);
-                            }
-                            KeyCode::Char('+') | KeyCode::Char('=') => {
-                                self.spectrum.adjust_sensitivity(10);
-                            }
-                            KeyCode::Char('[') => {
-                                self.spectrum.adjust_decay(-1);
-                            }
-                            KeyCode::Char(']') => {
-                                self.spectrum.adjust_decay(1);
-                            }
-                            KeyCode::Char('j') | KeyCode::Char('J') => {
-                                self.adjust_output_rate(-1);
-                            }
-                            KeyCode::Char('k') | KeyCode::Char('K') => {
-                                self.adjust_output_rate(1);
-                            }
-                            _ => {}
-                        }
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Char('Q') => break,
+                    KeyCode::Up if self.selected_index > 0 => {
+                        self.selected_index -= 1;
                     }
+                    KeyCode::Down if self.selected_index < visible_len.saturating_sub(1) => {
+                        self.selected_index += 1;
+                    }
+                    KeyCode::Char('h') | KeyCode::Char('H') => {
+                        self.show_hidden = !self.show_hidden;
+                        self.clamp_selection(&audio_info);
+                    }
+                    KeyCode::Char('-') | KeyCode::Char('_') => {
+                        self.spectrum.adjust_sensitivity(-10);
+                    }
+                    KeyCode::Char('+') | KeyCode::Char('=') => {
+                        self.spectrum.adjust_sensitivity(10);
+                    }
+                    KeyCode::Char('[') => {
+                        self.spectrum.adjust_decay(-1);
+                    }
+                    KeyCode::Char(']') => {
+                        self.spectrum.adjust_decay(1);
+                    }
+                    KeyCode::Char('j') | KeyCode::Char('J') => {
+                        self.adjust_output_rate(-1);
+                    }
+                    KeyCode::Char('k') | KeyCode::Char('K') => {
+                        self.adjust_output_rate(1);
+                    }
+                    _ => {}
+                }
+            }
         }
 
         Ok(())
@@ -240,12 +239,14 @@ impl Ui {
     fn current_rate_info(&self) -> Option<OutputRateInfo> {
         #[cfg(target_os = "linux")]
         {
-            return Self::read_pipewire_rates().ok().map(
-                |(current_rate, forced_rate, _allowed_rates)| OutputRateInfo {
-                    current_rate,
-                    selected_rate: (forced_rate != 0).then_some(forced_rate),
-                },
-            );
+            Self::read_pipewire_rates()
+                .ok()
+                .map(
+                    |(current_rate, forced_rate, _allowed_rates)| OutputRateInfo {
+                        current_rate,
+                        selected_rate: (forced_rate != 0).then_some(forced_rate),
+                    },
+                )
         }
 
         #[cfg(target_os = "macos")]
@@ -525,35 +526,6 @@ impl Ui {
             .collect()
     }
 
-    fn expand_supported_rates(rate_ranges: &[(u32, u32)], current_rate: u32) -> Vec<u32> {
-        const COMMON_SAMPLE_RATES: [u32; 11] = [
-            8_000, 16_000, 22_050, 32_000, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000,
-            384_000,
-        ];
-
-        let mut supported_rates = Vec::new();
-        for (min_rate, max_rate) in rate_ranges {
-            if min_rate == max_rate {
-                supported_rates.push(*min_rate);
-                continue;
-            }
-
-            supported_rates.push(*min_rate);
-            supported_rates.push(*max_rate);
-            supported_rates.extend(
-                COMMON_SAMPLE_RATES
-                    .iter()
-                    .copied()
-                    .filter(|rate| *min_rate <= *rate && *rate <= *max_rate),
-            );
-        }
-
-        supported_rates.push(current_rate);
-        supported_rates.sort_unstable();
-        supported_rates.dedup();
-        supported_rates
-    }
-
     fn step_rate(current_rate: u32, allowed_rates: &[u32], direction: isize) -> Option<u32> {
         if allowed_rates.is_empty() || direction == 0 {
             return None;
@@ -592,10 +564,10 @@ impl Ui {
             let trimmed = line.trim();
             if let Some(raw_rates) = trimmed.strip_prefix("Rates: ") {
                 for rate in raw_rates.split(',') {
-                    if let Ok(rate) = rate.trim().parse::<u32>() {
-                        if !rates.contains(&rate) {
-                            rates.push(rate);
-                        }
+                    if let Ok(rate) = rate.trim().parse::<u32>()
+                        && !rates.contains(&rate)
+                    {
+                        rates.push(rate);
                     }
                 }
             }
@@ -666,11 +638,5 @@ mod tests {
     fn test_filter_supported_rates() {
         let rates = Ui::filter_supported_rates(&[44100, 48000, 88200, 96000], &[48000, 96000]);
         assert_eq!(rates, vec![48000, 96000]);
-    }
-
-    #[test]
-    fn test_expand_supported_rates() {
-        let rates = Ui::expand_supported_rates(&[(44100, 44100), (48000, 96000)], 48000);
-        assert_eq!(rates, vec![44100, 48000, 88200, 96000]);
     }
 }

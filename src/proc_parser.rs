@@ -1,3 +1,10 @@
+#[cfg(target_os = "macos")]
+use objc2_core_audio::{
+    AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID,
+    AudioObjectPropertyAddress, kAudioHardwarePropertyProcessObjectList,
+    kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
+    kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID,
+};
 #[cfg(target_os = "linux")]
 use std::fs;
 #[cfg(target_os = "linux")]
@@ -6,13 +13,6 @@ use std::path::Path;
 use std::process::Command;
 #[cfg(target_os = "linux")]
 use std::process::Command;
-#[cfg(target_os = "macos")]
-use objc2_core_audio::{
-    AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID,
-    AudioObjectPropertyAddress, kAudioHardwarePropertyProcessObjectList,
-    kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
-    kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID,
-};
 
 use crate::audio_info::{AudioDevice, AudioInfo, PlaybackSource, StreamState};
 use crate::error::{AudioError, Result};
@@ -198,7 +198,11 @@ impl ProcParser {
 
         let mut buf = vec![0i8; 4096];
         let result = unsafe {
-            libc::proc_pidpath(pid as i32, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32)
+            libc::proc_pidpath(
+                pid as i32,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len() as u32,
+            )
         };
         if result > 0 {
             let path = unsafe {
@@ -445,12 +449,11 @@ impl ProcParser {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
 
-            if entry.path().is_dir() {
-                if let Some(pcm_id) = Self::extract_pcm_id(&name_str) {
-                    let sub_devices =
-                        Self::read_sub_devices(card_id, pcm_id, &name_str, card_name)?;
-                    devices.extend(sub_devices);
-                }
+            if entry.path().is_dir()
+                && let Some(pcm_id) = Self::extract_pcm_id(&name_str)
+            {
+                let sub_devices = Self::read_sub_devices(card_id, pcm_id, &name_str, card_name)?;
+                devices.extend(sub_devices);
             }
         }
 
@@ -485,24 +488,24 @@ impl ProcParser {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
 
-            if entry.path().is_dir() {
-                if let Some(sub_id) = Self::extract_sub_id(&name_str) {
-                    let status = Self::read_status(card_id, pcm_name, sub_id)?;
-                    let hw_params = Self::read_hw_params(card_id, pcm_name, sub_id)?;
+            if entry.path().is_dir()
+                && let Some(sub_id) = Self::extract_sub_id(&name_str)
+            {
+                let status = Self::read_status(card_id, pcm_name, sub_id)?;
+                let hw_params = Self::read_hw_params(card_id, pcm_name, sub_id)?;
 
-                    devices.push(AudioDevice {
-                        card_id,
-                        card_name: card_name.to_string(),
-                        pcm_id,
-                        sub_id,
-                        is_playback: Self::is_playback_pcm(pcm_name),
-                        state: status.state,
-                        sample_rate: hw_params.sample_rate,
-                        channels: hw_params.channels,
-                        sources: Vec::new(),
-                        volume: Vec::new(),
-                    });
-                }
+                devices.push(AudioDevice {
+                    card_id,
+                    card_name: card_name.to_string(),
+                    pcm_id,
+                    sub_id,
+                    is_playback: Self::is_playback_pcm(pcm_name),
+                    state: status.state,
+                    sample_rate: hw_params.sample_rate,
+                    channels: hw_params.channels,
+                    sources: Vec::new(),
+                    volume: Vec::new(),
+                });
             }
         }
 
@@ -639,12 +642,11 @@ impl ProcParser {
                 continue;
             }
 
-            if let Some(card) = trimmed.strip_prefix("api.alsa.pcm.card = ") {
-                if let (Some(sink_index), Some(card_id)) =
+            if let Some(card) = trimmed.strip_prefix("api.alsa.pcm.card = ")
+                && let (Some(sink_index), Some(card_id)) =
                     (current_sink, card.trim_matches('"').parse::<u32>().ok())
-                {
-                    sink_cards.insert(sink_index, card_id);
-                }
+            {
+                sink_cards.insert(sink_index, card_id);
             }
         }
 
