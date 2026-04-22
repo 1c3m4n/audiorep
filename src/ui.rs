@@ -1,16 +1,31 @@
 #[cfg(target_os = "linux")]
 use std::fs;
 use std::io;
+#[cfg(target_os = "macos")]
+use std::mem;
 #[cfg(target_os = "linux")]
 use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::ptr::{NonNull, null};
 #[cfg(target_os = "linux")]
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
+use cpal::traits::{DeviceTrait, HostTrait};
 use crossterm::{
     ExecutableCommand,
     event::{self, Event, KeyCode, KeyEventKind},
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+#[cfg(target_os = "macos")]
+use std::process::Command;
+#[cfg(target_os = "macos")]
+use objc2_core_audio::{
+    AudioObjectGetPropertyData, AudioObjectID, AudioObjectPropertyAddress,
+    AudioObjectSetPropertyData, kAudioDevicePropertyNominalSampleRate,
+    kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyElementMain,
+    kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
 };
 use ratatui::{
     Terminal,
@@ -24,9 +39,9 @@ use crate::spectrum::SpectrumMonitor;
 use crate::visualizer::Visualizer;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct PipewireRateInfo {
+pub struct OutputRateInfo {
     pub current_rate: u32,
-    pub forced_rate: u32,
+    pub selected_rate: Option<u32>,
 }
 
 pub struct Ui {
@@ -36,6 +51,7 @@ pub struct Ui {
     selected_index: usize,
     show_hidden: bool,
     rate_status: Option<(String, Instant)>,
+    diagnostic_status: Option<(String, Instant)>,
     last_refresh: Instant,
     refresh_interval: Duration,
 }
@@ -49,6 +65,7 @@ impl Ui {
             selected_index: 0,
             show_hidden: false,
             rate_status: None,
+            diagnostic_status: None,
             last_refresh: Instant::now(),
             refresh_interval: Duration::from_millis(500),
         }
@@ -58,6 +75,10 @@ impl Ui {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         stdout.execute(EnterAlternateScreen)?;
+
+        // Set terminal title and keep it fixed
+        print!("\x1b]0;audiorep\x07");
+        io::Write::flush(&mut stdout)?;
 
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
@@ -71,25 +92,47 @@ impl Ui {
     }
 
     fn run_app<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
-        let mut audio_info = self.parser.parse_audio_info()?;
+        let mut audio_info = match self.parser.parse_audio_info() {
+            Ok(info) => info,
+            Err(error) => {
+                let message = format!("audio probe failed: {}", error);
+                warn!("{}", message);
+                self.set_diagnostic_status(message);
+                crate::audio_info::AudioInfo {
+                    devices: Vec::new(),
+                }
+            }
+        };
 
         loop {
+            let has_input = event::poll(Duration::from_millis(16))?;
+
             if self.should_refresh() {
                 match self.parser.parse_audio_info() {
                     Ok(info) => {
                         audio_info = info;
+                        self.diagnostic_status = None;
                     }
                     Err(e) => {
-                        warn!("Failed to parse audio info: {}", e);
+                        let message = format!("audio probe failed: {}", e);
+                        warn!("{}", message);
+                        self.set_diagnostic_status(message);
                     }
                 }
             }
 
             self.clamp_selection(&audio_info);
-            self.clear_expired_rate_status();
+            self.clear_expired_statuses();
             let spectrum = self.spectrum.snapshot();
             let rate_info = self.current_rate_info();
             let footer_rate_label = self.footer_rate_label();
+            let status_message = self.status_message().or_else(|| {
+                if !spectrum.active && !spectrum.message.is_empty() {
+                    Some(spectrum.message.clone())
+                } else {
+                    None
+                }
+            });
             terminal.draw(|f| {
                 self.visualizer.render(
                     f,
@@ -97,31 +140,27 @@ impl Ui {
                     &spectrum,
                     rate_info.as_ref(),
                     &footer_rate_label,
-                    self.rate_status
-                        .as_ref()
-                        .map(|(message, _)| message.as_str()),
+                    status_message.as_deref(),
                     self.selected_index,
                     self.show_hidden,
                 );
             })?;
 
-            if event::poll(Duration::from_millis(100))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
+            if has_input
+                && let Event::Key(key) = event::read()?
+                    && key.kind == KeyEventKind::Press {
                         let visible_len = audio_info.visible_devices(self.show_hidden).len();
 
                         match key.code {
                             KeyCode::Char('q') | KeyCode::Char('Q') => break,
-                            KeyCode::Up => {
-                                if self.selected_index > 0 {
+                            KeyCode::Up
+                                if self.selected_index > 0 => {
                                     self.selected_index -= 1;
                                 }
-                            }
-                            KeyCode::Down => {
-                                if self.selected_index < visible_len.saturating_sub(1) {
+                            KeyCode::Down
+                                if self.selected_index < visible_len.saturating_sub(1) => {
                                     self.selected_index += 1;
                                 }
-                            }
                             KeyCode::Char('h') | KeyCode::Char('H') => {
                                 self.show_hidden = !self.show_hidden;
                                 self.clamp_selection(&audio_info);
@@ -147,15 +186,18 @@ impl Ui {
                             _ => {}
                         }
                     }
-                }
-            }
         }
 
         Ok(())
     }
 
-    fn should_refresh(&self) -> bool {
-        self.last_refresh.elapsed() >= self.refresh_interval
+    fn should_refresh(&mut self) -> bool {
+        if self.last_refresh.elapsed() >= self.refresh_interval {
+            self.last_refresh = Instant::now();
+            true
+        } else {
+            false
+        }
     }
 
     fn clamp_selection(&mut self, audio_info: &crate::audio_info::AudioInfo) {
@@ -163,13 +205,34 @@ impl Ui {
         self.selected_index = self.selected_index.min(visible_len.saturating_sub(1));
     }
 
-    fn current_rate_info(&self) -> Option<PipewireRateInfo> {
+    fn current_rate_info(&self) -> Option<OutputRateInfo> {
+        #[cfg(target_os = "linux")]
+        {
+            return Self::read_pipewire_rates().ok().map(
+                |(current_rate, forced_rate, _allowed_rates)| OutputRateInfo {
+                    current_rate,
+                    selected_rate: (forced_rate != 0).then_some(forced_rate),
+                },
+            );
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            Self::read_macos_rates()
+                .ok()
+                .map(|(current_rate, _supported_rates)| OutputRateInfo {
+                    current_rate,
+                    selected_rate: Some(current_rate),
+                })
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         Self::read_pipewire_rates()
             .ok()
             .map(
-                |(current_rate, forced_rate, _allowed_rates)| PipewireRateInfo {
+                |(current_rate, forced_rate, _allowed_rates)| OutputRateInfo {
                     current_rate,
-                    forced_rate,
+                    selected_rate: (forced_rate != 0).then_some(forced_rate),
                 },
             )
     }
@@ -179,7 +242,24 @@ impl Ui {
         "j/k: rate".to_string()
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    fn footer_rate_label(&self) -> String {
+        let rates = Self::read_macos_rates()
+            .map(|(_, rates)| rates)
+            .unwrap_or_default();
+        if rates.is_empty() {
+            "j/k: rate".to_string()
+        } else {
+            let rates_str = rates
+                .iter()
+                .map(|r| format!("{}", r / 1000))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("j/k: rate [{}k]", rates_str)
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn footer_rate_label(&self) -> String {
         "rate: unsupported".to_string()
     }
@@ -216,7 +296,31 @@ impl Ui {
         self.rate_status = Some((message, Instant::now()));
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    fn adjust_output_rate(&mut self, direction: isize) {
+        let Ok((current_rate, supported_rates)) = Self::read_macos_rates() else {
+            self.rate_status = Some((
+                "failed to read macOS output rate".to_string(),
+                Instant::now(),
+            ));
+            return;
+        };
+        let Some(target_rate) = Self::step_rate(current_rate, &supported_rates, direction) else {
+            return;
+        };
+
+        match Self::set_macos_output_rate(target_rate) {
+            Ok(()) => {
+                let message = format!("set default output to {} Hz", target_rate);
+                self.rate_status = Some((message, Instant::now()));
+            }
+            Err(error) => {
+                self.rate_status = Some((error, Instant::now()));
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn adjust_output_rate(&mut self, _direction: isize) {
         self.rate_status = Some((
             "rate control is not supported on this platform".to_string(),
@@ -224,13 +328,36 @@ impl Ui {
         ));
     }
 
-    fn clear_expired_rate_status(&mut self) {
+    fn set_diagnostic_status(&mut self, message: String) {
+        self.diagnostic_status = Some((message, Instant::now()));
+    }
+
+    fn status_message(&self) -> Option<String> {
+        self.rate_status
+            .as_ref()
+            .map(|(message, _)| message.clone())
+            .or_else(|| {
+                self.diagnostic_status
+                    .as_ref()
+                    .map(|(message, _)| message.clone())
+            })
+    }
+
+    fn clear_expired_statuses(&mut self) {
         if self
             .rate_status
             .as_ref()
             .is_some_and(|(_, timestamp)| timestamp.elapsed() > Duration::from_secs(2))
         {
             self.rate_status = None;
+        }
+
+        if self
+            .diagnostic_status
+            .as_ref()
+            .is_some_and(|(_, timestamp)| timestamp.elapsed() > Duration::from_secs(4))
+        {
+            self.diagnostic_status = None;
         }
     }
 
@@ -281,16 +408,118 @@ impl Ui {
         Ok((current_rate, forced_rate, allowed_rates))
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn read_pipewire_rates() -> std::result::Result<(u32, u32, Vec<u32>), ()> {
         Err(())
     }
 
+    #[cfg(target_os = "macos")]
+    fn read_macos_rates() -> std::result::Result<(u32, Vec<u32>), ()> {
+        let host = cpal::default_host();
+        let device = host.default_output_device().ok_or(())?;
+        let current_rate = device
+            .default_output_config()
+            .map_err(|_| ())?
+            .sample_rate();
+        let ranges = device
+            .supported_output_configs()
+            .map_err(|_| ())?
+            .map(|config| (config.min_sample_rate(), config.max_sample_rate()))
+            .collect::<Vec<_>>();
+        let supported_rates = Self::expand_supported_rates(&ranges, current_rate);
+        Ok((current_rate, supported_rates))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_macos_output_rate(target_rate: u32) -> std::result::Result<(), String> {
+        let device_id = Self::default_macos_output_device_id()
+            .ok_or_else(|| "failed to find default macOS output device".to_string())?;
+        let property = AudioObjectPropertyAddress {
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain,
+        };
+        let rate = target_rate as f64;
+        let size = mem::size_of::<f64>() as u32;
+        let status = unsafe {
+            AudioObjectSetPropertyData(
+                device_id,
+                NonNull::from(&property),
+                0,
+                null(),
+                size,
+                NonNull::from(&rate).cast(),
+            )
+        };
+
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "failed to set macOS output rate to {} Hz (OSStatus {})",
+                target_rate, status
+            ))
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn default_macos_output_device_id() -> Option<AudioObjectID> {
+        let property = AudioObjectPropertyAddress {
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain,
+        };
+        let mut device_id: AudioObjectID = 0;
+        let mut size = mem::size_of::<AudioObjectID>() as u32;
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                kAudioObjectSystemObject as u32,
+                NonNull::from(&property),
+                0,
+                null(),
+                NonNull::from(&mut size),
+                NonNull::from(&mut device_id).cast(),
+            )
+        };
+
+        (status == 0 && device_id != 0).then_some(device_id)
+    }
+
+    #[cfg(any(target_os = "linux", test))]
     fn parse_allowed_rates(raw: &str) -> Vec<u32> {
         raw.trim_matches(|ch| ch == '[' || ch == ']')
             .split_whitespace()
             .filter_map(|part| part.trim_end_matches(',').parse::<u32>().ok())
             .collect()
+    }
+
+    fn expand_supported_rates(rate_ranges: &[(u32, u32)], current_rate: u32) -> Vec<u32> {
+        const COMMON_SAMPLE_RATES: [u32; 11] = [
+            8_000, 16_000, 22_050, 32_000, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000,
+            384_000,
+        ];
+
+        let mut supported_rates = Vec::new();
+        for (min_rate, max_rate) in rate_ranges {
+            if min_rate == max_rate {
+                supported_rates.push(*min_rate);
+                continue;
+            }
+
+            supported_rates.push(*min_rate);
+            supported_rates.push(*max_rate);
+            supported_rates.extend(
+                COMMON_SAMPLE_RATES
+                    .iter()
+                    .copied()
+                    .filter(|rate| *min_rate <= *rate && *rate <= *max_rate),
+            );
+        }
+
+        supported_rates.push(current_rate);
+        supported_rates.sort_unstable();
+        supported_rates.dedup();
+        supported_rates
     }
 
     fn step_rate(current_rate: u32, allowed_rates: &[u32], direction: isize) -> Option<u32> {
@@ -305,6 +534,7 @@ impl Ui {
         allowed_rates.get(next_index).copied()
     }
 
+    #[cfg(any(target_os = "linux", test))]
     fn filter_supported_rates(allowed_rates: &[u32], supported_rates: &[u32]) -> Vec<u32> {
         let filtered: Vec<u32> = allowed_rates
             .iter()
@@ -375,6 +605,7 @@ mod tests {
         let ui = Ui::new();
         assert_eq!(ui.selected_index, 0);
         assert!(!ui.show_hidden);
+        assert!(ui.diagnostic_status.is_none());
         assert_eq!(ui.refresh_interval, Duration::from_millis(500));
     }
 
@@ -403,5 +634,11 @@ mod tests {
     fn test_filter_supported_rates() {
         let rates = Ui::filter_supported_rates(&[44100, 48000, 88200, 96000], &[48000, 96000]);
         assert_eq!(rates, vec![48000, 96000]);
+    }
+
+    #[test]
+    fn test_expand_supported_rates() {
+        let rates = Ui::expand_supported_rates(&[(44100, 44100), (48000, 96000)], 48000);
+        assert_eq!(rates, vec![44100, 48000, 88200, 96000]);
     }
 }

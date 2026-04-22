@@ -1,3 +1,4 @@
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamState {
     Running,
@@ -7,6 +8,8 @@ pub enum StreamState {
 }
 
 impl StreamState {
+    #[cfg(any(target_os = "linux", test))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn from_str(s: &str) -> Self {
         match s.trim() {
             "RUNNING" => StreamState::Running,

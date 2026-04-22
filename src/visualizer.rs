@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::audio_info::{AudioInfo, StreamState};
 use crate::spectrum::{SpectrumSnapshot, spectrum_label_positions};
-use crate::ui::PipewireRateInfo;
+use crate::ui::OutputRateInfo;
 
 pub struct Visualizer;
 
@@ -22,7 +22,7 @@ impl Visualizer {
         frame: &mut Frame,
         audio_info: &AudioInfo,
         spectrum: &SpectrumSnapshot,
-        rate_info: Option<&PipewireRateInfo>,
+        rate_info: Option<&OutputRateInfo>,
         footer_rate_label: &str,
         rate_status: Option<&str>,
         selected_index: usize,
@@ -155,9 +155,14 @@ impl Visualizer {
                     .join(", ");
                 format!("Sources: {names}")
             };
+            let volume = if device.volume.is_empty() {
+                String::new()
+            } else {
+                format!(" | Vol: {}%", device.volume[0])
+            };
 
             let text = format!(
-                "Card {}: {} | PCM: {} | Sub: {} | State: {:?} | {} Hz | {} ch\n{}",
+                "Card {}: {} | PCM: {} | Sub: {} | State: {:?} | {} Hz | {} ch{}\n{}",
                 device.card_id,
                 device.card_name,
                 device.pcm_id,
@@ -165,6 +170,7 @@ impl Visualizer {
                 device.state,
                 device.sample_rate.unwrap_or(0),
                 device.channels.unwrap_or(0),
+                volume,
                 sources,
             );
 
@@ -241,7 +247,7 @@ impl Visualizer {
         frame: &mut Frame,
         area: Rect,
         show_hidden: bool,
-        rate_info: Option<&PipewireRateInfo>,
+        rate_info: Option<&OutputRateInfo>,
         footer_rate_label: &str,
         rate_status: Option<&str>,
     ) {
@@ -252,15 +258,24 @@ impl Visualizer {
         };
         let rate_label = format_rate_info(rate_info);
         let status_label = rate_status.unwrap_or("");
+        let rate_part = if rate_label.is_empty() {
+            String::new()
+        } else {
+            format!(" | {}", rate_label)
+        };
+        let status_part = if status_label.is_empty() {
+            String::new()
+        } else {
+            format!(" | {}", status_label)
+        };
         let text = format!(
-            "q: quit | ↑/↓: navigate | h: {} | +/-: sensitivity | [ ]: decay | {} | {}{}{}",
+            "q: quit | ↑/↓: navigate | h: {} | +/-: sens | [ ]: decay | {}{}{}",
             hidden_label,
             footer_rate_label,
-            rate_label,
-            if status_label.is_empty() { "" } else { " | " },
-            status_label,
+            rate_part,
+            status_part,
         );
-        let text_area = centered_rect(area, 86);
+        let text_area = centered_rect(area, 120);
         let paragraph = Paragraph::new(text)
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true })
@@ -282,17 +297,17 @@ fn centered_rect(area: Rect, max_width: u16) -> Rect {
     }
 }
 
-fn format_rate_info(rate_info: Option<&PipewireRateInfo>) -> String {
+fn format_rate_info(rate_info: Option<&OutputRateInfo>) -> String {
     match rate_info {
-        Some(rate_info) => format!(
-            "rate: {} Hz | forced: {}",
-            rate_info.current_rate,
-            if rate_info.forced_rate == 0 {
-                "auto".to_string()
-            } else {
-                format!("{} Hz", rate_info.forced_rate)
+        Some(rate_info) => match rate_info.selected_rate {
+            Some(selected_rate) if selected_rate != rate_info.current_rate => {
+                format!(
+                    "rate: {} Hz | selected: {} Hz",
+                    rate_info.current_rate, selected_rate
+                )
             }
-        ),
+            _ => format!("rate: {} Hz", rate_info.current_rate),
+        },
         None => "rate: unavailable".to_string(),
     }
 }

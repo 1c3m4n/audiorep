@@ -6,6 +6,13 @@ use std::path::Path;
 use std::process::Command;
 #[cfg(target_os = "linux")]
 use std::process::Command;
+#[cfg(target_os = "macos")]
+use objc2_core_audio::{
+    AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID,
+    AudioObjectPropertyAddress, kAudioHardwarePropertyProcessObjectList,
+    kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
+    kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID,
+};
 
 use crate::audio_info::{AudioDevice, AudioInfo, PlaybackSource, StreamState};
 use crate::error::{AudioError, Result};
@@ -31,7 +38,7 @@ impl ProcParser {
                 return Err(AudioError::NoDevices);
             }
 
-            return Ok(AudioInfo { devices });
+            Ok(AudioInfo { devices })
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -54,9 +61,231 @@ impl ProcParser {
         }
 
         let text = String::from_utf8_lossy(&output.stdout);
+        let output_volume = Self::read_macos_output_volume();
+        let mut devices = Self::parse_macos_devices(&text, output_volume);
+        let sources = Self::read_macos_playback_sources();
+        for device in devices.iter_mut() {
+            if device.is_playback {
+                device.sources = sources.clone();
+            }
+        }
+        Ok(devices)
+    }
+
+    fn read_macos_playback_sources() -> Vec<PlaybackSource> {
+        Self::read_macos_playback_sources_coreaudio()
+    }
+
+    fn read_macos_playback_sources_coreaudio() -> Vec<PlaybackSource> {
+        let process_ids = Self::get_coreaudio_process_ids();
+        if process_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let mut sources = Vec::new();
+        for pid in process_ids {
+            if let Some(name) = Self::get_process_name_from_pid(pid)
+                && !sources.iter().any(|s: &PlaybackSource| s.name == name)
+            {
+                sources.push(PlaybackSource {
+                    name,
+                    sample_rate: None,
+                });
+            }
+        }
+
+        sources
+    }
+
+    fn get_coreaudio_process_ids() -> Vec<u32> {
+        let property = AudioObjectPropertyAddress {
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain,
+        };
+
+        let mut size: u32 = 0;
+        let size_status = unsafe {
+            AudioObjectGetPropertyDataSize(
+                kAudioObjectSystemObject as u32,
+                std::ptr::NonNull::from(&property),
+                0,
+                std::ptr::null(),
+                std::ptr::NonNull::from(&mut size),
+            )
+        };
+
+        if size_status != 0 || size == 0 {
+            return Vec::new();
+        }
+
+        let count = size as usize / std::mem::size_of::<AudioObjectID>();
+        let mut ids = vec![0u32; count];
+        let mut data_size = size;
+        let data_status = unsafe {
+            AudioObjectGetPropertyData(
+                kAudioObjectSystemObject as u32,
+                std::ptr::NonNull::from(&property),
+                0,
+                std::ptr::null(),
+                std::ptr::NonNull::from(&mut data_size),
+                std::ptr::NonNull::new(ids.as_mut_ptr()).unwrap().cast(),
+            )
+        };
+
+        if data_status != 0 {
+            return Vec::new();
+        }
+
+        ids.into_iter()
+            .filter(|id| Self::process_is_running_output(*id))
+            .filter_map(|id| Self::process_pid(id))
+            .collect()
+    }
+
+    fn process_is_running_output(id: u32) -> bool {
+        let property = AudioObjectPropertyAddress {
+            mSelector: kAudioProcessPropertyIsRunningOutput,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain,
+        };
+        let mut value: u32 = 0;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                id,
+                std::ptr::NonNull::from(&property),
+                0,
+                std::ptr::null(),
+                std::ptr::NonNull::from(&mut size),
+                std::ptr::NonNull::from(&mut value).cast(),
+            )
+        };
+        status == 0 && value != 0
+    }
+
+    fn process_pid(id: u32) -> Option<u32> {
+        let property = AudioObjectPropertyAddress {
+            mSelector: kAudioProcessPropertyPID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain,
+        };
+        let mut value: i32 = 0;
+        let mut size = std::mem::size_of::<i32>() as u32;
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                id,
+                std::ptr::NonNull::from(&property),
+                0,
+                std::ptr::null(),
+                std::ptr::NonNull::from(&mut size),
+                std::ptr::NonNull::from(&mut value).cast(),
+            )
+        };
+        if status == 0 && value > 0 {
+            Some(value as u32)
+        } else {
+            None
+        }
+    }
+
+    fn get_process_name_from_pid(pid: u32) -> Option<String> {
+        // Don't include audiorep itself as a source
+        let self_pid = std::process::id();
+        if pid == self_pid {
+            return None;
+        }
+
+        let mut buf = vec![0i8; 4096];
+        let result = unsafe {
+            libc::proc_pidpath(pid as i32, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32)
+        };
+        if result > 0 {
+            let path = unsafe {
+                std::ffi::CStr::from_ptr(buf.as_ptr())
+                    .to_string_lossy()
+                    .to_string()
+            };
+            if !path.is_empty() {
+                let name = std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())?;
+                // Filter out system processes
+                if Self::is_system_process(&name) {
+                    return None;
+                }
+                return Some(name);
+            }
+        }
+
+        // Fallback to ps
+        let output = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if name.is_empty() {
+            return None;
+        }
+        let name = std::path::Path::new(&name)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())?;
+        if Self::is_system_process(&name) {
+            return None;
+        }
+        Some(name)
+    }
+
+    fn is_system_process(name: &str) -> bool {
+        let system_processes = [
+            "audiorep",
+            "audioaccessoryd",
+            "com.apple.audio.SandboxHelper",
+            "heard",
+            "kernel_task",
+            "launchd",
+            "logd",
+            "mds",
+            "mds_stores",
+            "notifyd",
+            "opencode",
+            "syslogd",
+            "trustd",
+            "zsh",
+            "bash",
+            "sh",
+            "fish",
+            "tmux",
+            "screen",
+        ];
+        system_processes.contains(&name)
+            || name.starts_with("com.apple.")
+            || name.starts_with("audio")
+    }
+
+    fn read_macos_output_volume() -> Option<u8> {
+        let output = Command::new("osascript")
+            .args(["-e", "output volume of (get volume settings)"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+
+        let text = String::from_utf8(output.stdout).ok()?;
+        text.trim().parse::<u8>().ok()
+    }
+
+    fn parse_macos_devices(text: &str, output_volume: Option<u8>) -> Vec<AudioDevice> {
         let mut devices = Vec::new();
         let mut current_name: Option<String> = None;
         let mut is_output = false;
+        let mut is_default_output = false;
         let mut sample_rate = None;
         let mut channels = None;
 
@@ -68,11 +297,13 @@ impl ProcParser {
             }
 
             let indent = line.chars().take_while(|ch| ch.is_whitespace()).count();
-            if indent == 4 && trimmed.ends_with(':') && !trimmed.contains("(") {
+            if indent == 8 && trimmed.ends_with(':') && !trimmed.contains("(") {
                 if is_output {
                     Self::push_macos_device(
                         &mut devices,
                         current_name.take(),
+                        is_default_output,
+                        output_volume,
                         sample_rate.take(),
                         channels.take(),
                     );
@@ -80,12 +311,13 @@ impl ProcParser {
 
                 current_name = Some(trimmed.trim_end_matches(':').to_string());
                 is_output = false;
+                is_default_output = false;
                 sample_rate = None;
                 channels = None;
                 continue;
             }
 
-            if indent < 8 {
+            if indent < 10 {
                 continue;
             }
 
@@ -96,21 +328,31 @@ impl ProcParser {
                 sample_rate = value.trim().parse::<u32>().ok();
             } else if trimmed == "Default Output Device: Yes" {
                 is_output = true;
+                is_default_output = true;
             } else if trimmed == "Output Source: Default" {
                 is_output = true;
             }
         }
 
         if is_output {
-            Self::push_macos_device(&mut devices, current_name, sample_rate, channels);
+            Self::push_macos_device(
+                &mut devices,
+                current_name,
+                is_default_output,
+                output_volume,
+                sample_rate,
+                channels,
+            );
         }
 
-        Ok(devices)
+        devices
     }
 
     fn push_macos_device(
         devices: &mut Vec<AudioDevice>,
         name: Option<String>,
+        is_default_output: bool,
+        output_volume: Option<u8>,
         sample_rate: Option<u32>,
         channels: Option<u32>,
     ) {
@@ -125,11 +367,19 @@ impl ProcParser {
             pcm_id: 0,
             sub_id: 0,
             is_playback: true,
-            state: StreamState::Unknown("macos".to_string()),
+            state: if is_default_output {
+                StreamState::Running
+            } else {
+                StreamState::Stopped
+            },
             sample_rate,
             channels,
             sources: Vec::new(),
-            volume: Vec::new(),
+            volume: if is_default_output {
+                output_volume.into_iter().collect()
+            } else {
+                Vec::new()
+            },
         });
     }
 }
@@ -638,5 +888,103 @@ mod tests {
             StreamState::from_str("UNKNOWN"),
             StreamState::Unknown(_)
         ));
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_macos_devices_marks_default_output_running() {
+        let content = r#"
+Audio:
+
+    Devices:
+
+        MacBook Pro Microphone:
+
+          Default Input Device: Yes
+          Input Channels: 1
+          Manufacturer: Apple Inc.
+          Current SampleRate: 48000
+          Transport: Built-in
+          Input Source: MacBook Pro Microphone
+
+        MacBook Pro Speakers:
+
+          Default Output Device: Yes
+          Default System Output Device: Yes
+          Manufacturer: Apple Inc.
+          Output Channels: 2
+          Current SampleRate: 96000
+          Transport: Built-in
+          Output Source: MacBook Pro Speakers
+
+        Microsoft Teams Audio:
+
+          Input Channels: 1
+          Manufacturer: Microsoft Corp.
+          Output Channels: 1
+          Current SampleRate: 48000
+          Transport: Virtual
+          Input Source: Microsoft Teams Audio Device
+          Output Source: Microsoft Teams Audio Device
+"#;
+
+        let devices = ProcParser::parse_macos_devices(content, Some(69));
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].card_name, "MacBook Pro Speakers");
+        assert!(matches!(devices[0].state, StreamState::Running));
+        assert_eq!(devices[0].sample_rate, Some(96000));
+        assert_eq!(devices[0].channels, Some(2));
+        assert_eq!(devices[0].volume, vec![69]);
+
+        assert_eq!(devices[1].card_name, "Microsoft Teams Audio");
+        assert!(matches!(devices[1].state, StreamState::Stopped));
+        assert_eq!(devices[1].sample_rate, Some(48000));
+        assert_eq!(devices[1].channels, Some(1));
+        assert!(devices[1].volume.is_empty());
+    }
+
+    #[test]
+    fn test_read_macos_playback_sources_parses_lsof_output() {
+        let lsof_output = r#"p1234
+cSpotify
+n/dev/audio
+p5678
+cFirefox
+n/dev/audio
+p9999
+ckernel_task
+n/dev/null
+"#;
+
+        let mut sources = Vec::new();
+        let mut current_pid = None;
+        let mut current_name = None;
+
+        for line in lsof_output.lines() {
+            if let Some(pid_str) = line.strip_prefix('p') {
+                current_pid = pid_str.parse::<u32>().ok();
+            } else if let Some(name) = line.strip_prefix('c') {
+                current_name = Some(name.to_string());
+            } else if line.starts_with('n') && line.contains("audio") {
+                if let (Some(_pid), Some(ref name)) = (current_pid, current_name) {
+                    if !sources.iter().any(|s: &PlaybackSource| s.name == *name) {
+                        sources.push(PlaybackSource {
+                            name: name.clone(),
+                            sample_rate: None,
+                        });
+                    }
+                }
+                current_pid = None;
+                current_name = None;
+            }
+        }
+
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].name, "Spotify");
+        assert_eq!(sources[1].name, "Firefox");
     }
 }
