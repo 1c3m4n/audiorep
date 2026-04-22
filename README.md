@@ -29,6 +29,7 @@ cargo build --release
 
 ```bash
 install -Dm755 "target/release/audiorep" "$HOME/.local/bin/audiorep"
+install -Dm644 "audiorep.svg" "$HOME/.local/share/icons/hicolor/scalable/apps/audiorep.svg"
 ```
 
 ### System-wide install
@@ -36,6 +37,7 @@ install -Dm755 "target/release/audiorep" "$HOME/.local/bin/audiorep"
 ```bash
 sudo install -Dm755 "target/release/audiorep" "/usr/local/bin/audiorep"
 sudo install -Dm644 "audiorep.desktop" "/usr/share/applications/audiorep.desktop"
+sudo install -Dm644 "audiorep.svg" "/usr/share/icons/hicolor/scalable/apps/audiorep.svg"
 update-desktop-database "/usr/share/applications"
 ```
 
@@ -68,6 +70,7 @@ The included `audiorep.desktop` file launches the app with Kitty:
 
 ```ini
 Exec=kitty -e /usr/local/bin/audiorep
+Icon=audiorep
 ```
 
 If you prefer another terminal, edit that line before installing the desktop file.
