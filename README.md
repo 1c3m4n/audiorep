@@ -38,7 +38,7 @@ install -Dm644 "audiorep.svg" "$HOME/.local/share/icons/hicolor/scalable/apps/au
 sudo install -Dm755 "target/release/audiorep" "/usr/local/bin/audiorep"
 sudo install -Dm644 "audiorep.desktop" "/usr/share/applications/audiorep.desktop"
 sudo install -Dm644 "audiorep.svg" "/usr/share/icons/hicolor/scalable/apps/audiorep.svg"
-update-desktop-database "/usr/share/applications"
+sudo update-desktop-database "/usr/share/applications"
 ```
 
 ## Usage
@@ -70,7 +70,7 @@ The included `audiorep.desktop` file launches the app with Kitty:
 
 ```ini
 Exec=kitty -e /usr/local/bin/audiorep
-Icon=audiorep
+Icon=/usr/share/icons/hicolor/scalable/apps/audiorep.svg
 ```
 
 If you prefer another terminal, edit that line before installing the desktop file.
