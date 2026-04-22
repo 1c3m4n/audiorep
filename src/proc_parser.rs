@@ -269,16 +269,9 @@ impl ProcParser {
     }
 
     fn read_macos_output_volume() -> Option<u8> {
-        let output = Command::new("osascript")
-            .args(["-e", "output volume of (get volume settings)"])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-
-        let text = String::from_utf8(output.stdout).ok()?;
-        text.trim().parse::<u8>().ok()
+        // Skip volume reading on macOS to avoid osascript terminal flicker.
+        // Multi-output devices don't have a single volume control anyway.
+        None
     }
 
     fn parse_macos_devices(text: &str, output_volume: Option<u8>) -> Vec<AudioDevice> {

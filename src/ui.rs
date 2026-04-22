@@ -56,6 +56,8 @@ pub struct Ui {
     refresh_interval: Duration,
     #[cfg(target_os = "macos")]
     cached_audio_info: Option<crate::audio_info::AudioInfo>,
+    #[cfg(target_os = "macos")]
+    last_seen_rate: Option<u32>,
 }
 
 impl Ui {
@@ -72,6 +74,8 @@ impl Ui {
             refresh_interval: Duration::from_millis(500),
             #[cfg(target_os = "macos")]
             cached_audio_info: None,
+            #[cfg(target_os = "macos")]
+            last_seen_rate: None,
         }
     }
 
