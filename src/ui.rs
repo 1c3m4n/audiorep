@@ -1,6 +1,9 @@
+#[cfg(target_os = "linux")]
 use std::fs;
 use std::io;
+#[cfg(target_os = "linux")]
 use std::process::Command;
+#[cfg(target_os = "linux")]
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -83,21 +86,17 @@ impl Ui {
             }
 
             self.clamp_selection(&audio_info);
-            let spectrum = self.spectrum.snapshot();
-            let rate_info = Self::read_pipewire_rates().ok().map(
-                |(current_rate, forced_rate, _allowed_rates)| PipewireRateInfo {
-                    current_rate,
-                    forced_rate,
-                },
-            );
             self.clear_expired_rate_status();
-
+            let spectrum = self.spectrum.snapshot();
+            let rate_info = self.current_rate_info();
+            let footer_rate_label = self.footer_rate_label();
             terminal.draw(|f| {
                 self.visualizer.render(
                     f,
                     &audio_info,
                     &spectrum,
                     rate_info.as_ref(),
+                    &footer_rate_label,
                     self.rate_status
                         .as_ref()
                         .map(|(message, _)| message.as_str()),
@@ -164,6 +163,28 @@ impl Ui {
         self.selected_index = self.selected_index.min(visible_len.saturating_sub(1));
     }
 
+    fn current_rate_info(&self) -> Option<PipewireRateInfo> {
+        Self::read_pipewire_rates()
+            .ok()
+            .map(
+                |(current_rate, forced_rate, _allowed_rates)| PipewireRateInfo {
+                    current_rate,
+                    forced_rate,
+                },
+            )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn footer_rate_label(&self) -> String {
+        "j/k: rate".to_string()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn footer_rate_label(&self) -> String {
+        "rate: unsupported".to_string()
+    }
+
+    #[cfg(target_os = "linux")]
     fn adjust_output_rate(&mut self, direction: isize) {
         let Ok((current_rate, forced_rate, allowed_rates)) = Self::read_pipewire_rates() else {
             return;
@@ -195,6 +216,14 @@ impl Ui {
         self.rate_status = Some((message, Instant::now()));
     }
 
+    #[cfg(not(target_os = "linux"))]
+    fn adjust_output_rate(&mut self, _direction: isize) {
+        self.rate_status = Some((
+            "rate control is not supported on this platform".to_string(),
+            Instant::now(),
+        ));
+    }
+
     fn clear_expired_rate_status(&mut self) {
         if self
             .rate_status
@@ -205,6 +234,7 @@ impl Ui {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn reset_default_sink(&self) {
         let _ = Command::new("pactl")
             .args(["suspend-sink", "@DEFAULT_SINK@", "1"])
@@ -215,6 +245,7 @@ impl Ui {
             .output();
     }
 
+    #[cfg(target_os = "linux")]
     fn read_pipewire_rates() -> std::result::Result<(u32, u32, Vec<u32>), ()> {
         let output = Command::new("pw-metadata")
             .args(["-n", "settings"])
@@ -250,6 +281,11 @@ impl Ui {
         Ok((current_rate, forced_rate, allowed_rates))
     }
 
+    #[cfg(not(target_os = "linux"))]
+    fn read_pipewire_rates() -> std::result::Result<(u32, u32, Vec<u32>), ()> {
+        Err(())
+    }
+
     fn parse_allowed_rates(raw: &str) -> Vec<u32> {
         raw.trim_matches(|ch| ch == '[' || ch == ']')
             .split_whitespace()
@@ -283,6 +319,7 @@ impl Ui {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn read_supported_output_rates() -> Option<Vec<u32>> {
         let card_id = Self::read_default_sink_card_id()?;
         let stream_path = format!("/proc/asound/card{}/stream0", card_id);
@@ -310,6 +347,7 @@ impl Ui {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn read_default_sink_card_id() -> Option<u32> {
         let output = Command::new("pactl")
             .args(["list", "sinks"])

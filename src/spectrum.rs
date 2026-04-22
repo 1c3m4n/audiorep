@@ -1,9 +1,15 @@
+#[cfg(target_os = "linux")]
 use std::io::Read;
+#[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "linux")]
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
 use std::thread;
 
+#[cfg(target_os = "linux")]
 use rustfft::{FftPlanner, num_complex::Complex32};
 
 const SAMPLE_RATE: u32 = 48_000;
@@ -42,6 +48,7 @@ impl SpectrumSnapshot {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 struct SpectrumSettings {
     sensitivity: usize,
@@ -49,13 +56,23 @@ struct SpectrumSettings {
 }
 
 pub struct SpectrumMonitor {
+    #[cfg(target_os = "linux")]
     snapshot: Arc<Mutex<SpectrumSnapshot>>,
+    #[cfg(target_os = "linux")]
     stop: Arc<AtomicBool>,
+    #[cfg(target_os = "linux")]
     child_pid: Arc<Mutex<Option<u32>>>,
+    #[cfg(target_os = "linux")]
     settings: Arc<Mutex<SpectrumSettings>>,
 }
 
 impl SpectrumMonitor {
+    #[cfg(not(target_os = "linux"))]
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[cfg(target_os = "linux")]
     pub fn new() -> Self {
         let snapshot = Arc::new(Mutex::new(SpectrumSnapshot::starting()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -87,6 +104,20 @@ impl SpectrumMonitor {
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
+    pub fn snapshot(&self) -> SpectrumSnapshot {
+        SpectrumSnapshot {
+            bins: vec![0; BAR_COUNT],
+            peaks: vec![0; BAR_COUNT],
+            source_name: None,
+            message: "Spectrum capture is not supported on this platform yet".to_string(),
+            active: false,
+            sensitivity: DEFAULT_SENSITIVITY,
+            decay: DEFAULT_DECAY,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     pub fn snapshot(&self) -> SpectrumSnapshot {
         self.snapshot
             .lock()
@@ -102,18 +133,27 @@ impl SpectrumMonitor {
             })
     }
 
+    #[cfg(not(target_os = "linux"))]
+    pub fn adjust_sensitivity(&self, _delta: isize) {}
+
+    #[cfg(target_os = "linux")]
     pub fn adjust_sensitivity(&self, delta: isize) {
         self.update_settings(|settings| {
             settings.sensitivity = clamp_setting(settings.sensitivity, delta, 25, MAX_SENSITIVITY);
         });
     }
 
+    #[cfg(not(target_os = "linux"))]
+    pub fn adjust_decay(&self, _delta: isize) {}
+
+    #[cfg(target_os = "linux")]
     pub fn adjust_decay(&self, delta: isize) {
         self.update_settings(|settings| {
             settings.decay = clamp_setting(settings.decay, delta, 1, MAX_DECAY);
         });
     }
 
+    #[cfg(target_os = "linux")]
     fn update_settings(&self, update: impl FnOnce(&mut SpectrumSettings)) {
         if let Ok(mut settings) = self.settings.lock() {
             update(&mut settings);
@@ -125,6 +165,7 @@ impl SpectrumMonitor {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for SpectrumMonitor {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -139,6 +180,7 @@ impl Drop for SpectrumMonitor {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn run_capture(
     snapshot: Arc<Mutex<SpectrumSnapshot>>,
     stop: Arc<AtomicBool>,
@@ -246,6 +288,7 @@ fn run_capture(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn resolve_monitor_source() -> Result<String, String> {
     let pactl_info = run_command("pactl", &["info"])?;
     let sources = run_command("pactl", &["list", "short", "sources"])?;
@@ -267,6 +310,7 @@ fn resolve_monitor_source() -> Result<String, String> {
         .ok_or_else(|| "No monitor source found for the default sink".to_string())
 }
 
+#[cfg(target_os = "linux")]
 fn run_command(command: &str, args: &[&str]) -> Result<String, String> {
     let output = Command::new(command)
         .args(args)
@@ -281,6 +325,7 @@ fn run_command(command: &str, args: &[&str]) -> Result<String, String> {
         .map_err(|error| format!("Invalid UTF-8 from {command}: {error}"))
 }
 
+#[cfg(target_os = "linux")]
 fn parse_source_names(sources: &str) -> Vec<String> {
     sources
         .lines()
@@ -289,6 +334,7 @@ fn parse_source_names(sources: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(target_os = "linux")]
 fn decode_float32le_stereo_to_mono(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(CHANNELS * 4)
@@ -300,6 +346,7 @@ fn decode_float32le_stereo_to_mono(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+#[cfg(target_os = "linux")]
 fn compute_spectrum_bins(
     samples: &[f32],
     fft: &Arc<dyn rustfft::Fft<f32>>,
@@ -349,12 +396,14 @@ fn compute_spectrum_bins(
         .collect()
 }
 
+#[cfg(target_os = "linux")]
 fn band_edge_frequency(bucket: usize, bin_count: usize, nyquist: f32) -> f32 {
     let ratio = bucket as f32 / bin_count as f32;
     let span = (nyquist / MIN_FREQUENCY).ln();
     MIN_FREQUENCY * (span * ratio).exp()
 }
 
+#[cfg(target_os = "linux")]
 fn frequency_to_index(frequency: f32, len: usize) -> usize {
     let nyquist = SAMPLE_RATE as f32 / 2.0;
     ((frequency / nyquist) * len as f32)
@@ -362,6 +411,7 @@ fn frequency_to_index(frequency: f32, len: usize) -> usize {
         .clamp(0.0, len.saturating_sub(1) as f32) as usize
 }
 
+#[cfg(target_os = "linux")]
 fn hann_window(index: usize, size: usize) -> f32 {
     if size <= 1 {
         return 1.0;
@@ -371,12 +421,14 @@ fn hann_window(index: usize, size: usize) -> f32 {
     0.5 * (1.0 - phase.cos())
 }
 
+#[cfg(target_os = "linux")]
 fn smooth_bins(current: &mut [u64], next: &[u64]) {
     for (current, next) in current.iter_mut().zip(next.iter().copied()) {
         *current = ((*current as f32 * 0.65) + (next as f32 * 0.35)).round() as u64;
     }
 }
 
+#[cfg(target_os = "linux")]
 fn update_peak_hold(peaks: &mut [u64], bins: &[u64], decay: usize) {
     for (peak, bin) in peaks.iter_mut().zip(bins.iter().copied()) {
         *peak = if bin >= *peak {
@@ -415,6 +467,7 @@ pub fn spectrum_label_positions(bin_count: usize) -> Vec<(usize, &'static str)> 
     ]
 }
 
+#[cfg(target_os = "linux")]
 fn update_snapshot(
     snapshot: &Arc<Mutex<SpectrumSnapshot>>,
     source_name: &str,
@@ -434,6 +487,7 @@ fn update_snapshot(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn set_error(snapshot: &Arc<Mutex<SpectrumSnapshot>>, message: String) {
     if let Ok(mut state) = snapshot.lock() {
         state.message = message;
@@ -454,7 +508,7 @@ fn clamp_setting(current: usize, delta: isize, min: usize, max: usize) -> usize 
     current.saturating_add_signed(delta).clamp(min, max)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

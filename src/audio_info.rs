@@ -52,8 +52,11 @@ impl AudioInfo {
     }
 
     pub fn active_device(&self, show_hidden: bool) -> Option<&AudioDevice> {
-        self.visible_devices(show_hidden)
-            .into_iter()
+        let visible = self.visible_devices(show_hidden);
+        visible
+            .iter()
+            .copied()
             .find(|d| matches!(d.state, StreamState::Running))
+            .or_else(|| visible.first().copied())
     }
 }

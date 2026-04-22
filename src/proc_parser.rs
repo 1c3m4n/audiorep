@@ -1,10 +1,16 @@
+#[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::path::Path;
+#[cfg(target_os = "macos")]
+use std::process::Command;
+#[cfg(target_os = "linux")]
 use std::process::Command;
 
 use crate::audio_info::{AudioDevice, AudioInfo, PlaybackSource, StreamState};
 use crate::error::{AudioError, Result};
 
+#[cfg(target_os = "linux")]
 const PROC_ASOUND: &str = "/proc/asound";
 
 pub struct ProcParser;
@@ -13,7 +19,123 @@ impl ProcParser {
     pub fn new() -> Self {
         Self
     }
+}
 
+#[cfg(not(target_os = "linux"))]
+impl ProcParser {
+    pub fn parse_audio_info(&self) -> Result<AudioInfo> {
+        #[cfg(target_os = "macos")]
+        {
+            let devices = Self::read_macos_devices()?;
+            if devices.is_empty() {
+                return Err(AudioError::NoDevices);
+            }
+
+            return Ok(AudioInfo { devices });
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(AudioInfo {
+                devices: Vec::new(),
+            })
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl ProcParser {
+    fn read_macos_devices() -> Result<Vec<AudioDevice>> {
+        let output = Command::new("system_profiler")
+            .args(["SPAudioDataType"])
+            .output()?;
+        if !output.status.success() {
+            return Err(AudioError::NoDevices);
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut devices = Vec::new();
+        let mut current_name: Option<String> = None;
+        let mut is_output = false;
+        let mut sample_rate = None;
+        let mut channels = None;
+
+        for line in text.lines() {
+            let trimmed = line.trim();
+
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let indent = line.chars().take_while(|ch| ch.is_whitespace()).count();
+            if indent == 4 && trimmed.ends_with(':') && !trimmed.contains("(") {
+                if is_output {
+                    Self::push_macos_device(
+                        &mut devices,
+                        current_name.take(),
+                        sample_rate.take(),
+                        channels.take(),
+                    );
+                }
+
+                current_name = Some(trimmed.trim_end_matches(':').to_string());
+                is_output = false;
+                sample_rate = None;
+                channels = None;
+                continue;
+            }
+
+            if indent < 8 {
+                continue;
+            }
+
+            if let Some(value) = trimmed.strip_prefix("Output Channels:") {
+                channels = value.trim().parse::<u32>().ok();
+                is_output = true;
+            } else if let Some(value) = trimmed.strip_prefix("Current SampleRate:") {
+                sample_rate = value.trim().parse::<u32>().ok();
+            } else if trimmed == "Default Output Device: Yes" {
+                is_output = true;
+            } else if trimmed == "Output Source: Default" {
+                is_output = true;
+            }
+        }
+
+        if is_output {
+            Self::push_macos_device(&mut devices, current_name, sample_rate, channels);
+        }
+
+        Ok(devices)
+    }
+
+    fn push_macos_device(
+        devices: &mut Vec<AudioDevice>,
+        name: Option<String>,
+        sample_rate: Option<u32>,
+        channels: Option<u32>,
+    ) {
+        let Some(card_name) = name else {
+            return;
+        };
+
+        let next_id = devices.len() as u32;
+        devices.push(AudioDevice {
+            card_id: next_id,
+            card_name,
+            pcm_id: 0,
+            sub_id: 0,
+            is_playback: true,
+            state: StreamState::Unknown("macos".to_string()),
+            sample_rate,
+            channels,
+            sources: Vec::new(),
+            volume: Vec::new(),
+        });
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ProcParser {
     pub fn parse_audio_info(&self) -> Result<AudioInfo> {
         let path = Path::new(PROC_ASOUND);
         if !path.exists() {
@@ -359,17 +481,20 @@ impl ProcParser {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 struct StatusInfo {
     state: StreamState,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 struct HwParamsInfo {
     sample_rate: Option<u32>,
     channels: Option<u32>,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Default)]
 struct SinkInputInfo {
     sink_index: u32,
@@ -381,6 +506,7 @@ struct SinkInputInfo {
     name: String,
 }
 
+#[cfg(target_os = "linux")]
 impl SinkInputInfo {
     fn display_name(&self) -> String {
         let media_name = self
@@ -419,7 +545,7 @@ impl SinkInputInfo {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

@@ -23,6 +23,7 @@ impl Visualizer {
         audio_info: &AudioInfo,
         spectrum: &SpectrumSnapshot,
         rate_info: Option<&PipewireRateInfo>,
+        footer_rate_label: &str,
         rate_status: Option<&str>,
         selected_index: usize,
         show_hidden: bool,
@@ -47,7 +48,14 @@ impl Visualizer {
             selected_index,
             show_hidden,
         );
-        self.render_footer(frame, chunks[2], show_hidden, rate_info, rate_status);
+        self.render_footer(
+            frame,
+            chunks[2],
+            show_hidden,
+            rate_info,
+            footer_rate_label,
+            rate_status,
+        );
     }
 
     fn render_body(
@@ -234,6 +242,7 @@ impl Visualizer {
         area: Rect,
         show_hidden: bool,
         rate_info: Option<&PipewireRateInfo>,
+        footer_rate_label: &str,
         rate_status: Option<&str>,
     ) {
         let hidden_label = if show_hidden {
@@ -244,8 +253,9 @@ impl Visualizer {
         let rate_label = format_rate_info(rate_info);
         let status_label = rate_status.unwrap_or("");
         let text = format!(
-            "q: quit | ↑/↓: navigate | h: {} | +/-: sensitivity | [ ]: decay | j/k: rate | {}{}{}",
+            "q: quit | ↑/↓: navigate | h: {} | +/-: sensitivity | [ ]: decay | {} | {}{}{}",
             hidden_label,
+            footer_rate_label,
             rate_label,
             if status_label.is_empty() { "" } else { " | " },
             status_label,
