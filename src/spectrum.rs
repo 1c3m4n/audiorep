@@ -231,27 +231,25 @@ fn run_capture_macos(
     let host = cpal::default_host();
 
     // Try to find BlackHole or similar virtual audio device
-    let device = host
-        .devices()
-        .ok()
-        .and_then(|mut devices| {
-            devices.find(|d| {
-                d.name()
-                    .map(|name| {
-                        let name_lower = name.to_lowercase();
-                        name_lower.contains("blackhole")
-                            || name_lower.contains("loopback")
-                            || name_lower.contains("virtual")
-                            || name_lower.contains("soundflower")
-                    })
-                    .unwrap_or(false)
-            })
-        });
+    let device = host.devices().ok().and_then(|mut devices| {
+        devices.find(|d| {
+            d.name()
+                .map(|name| {
+                    let name_lower = name.to_lowercase();
+                    name_lower.contains("blackhole")
+                        || name_lower.contains("loopback")
+                        || name_lower.contains("virtual")
+                        || name_lower.contains("soundflower")
+                })
+                .unwrap_or(false)
+        })
+    });
 
     let Some(device) = device else {
         set_error(
             &snapshot,
-            "Spectrum: Install BlackHole (brew install blackhole-2ch) and set it as output".to_string(),
+            "Spectrum: Install BlackHole (brew install blackhole-2ch) and set it as output"
+                .to_string(),
         );
         return;
     };
@@ -288,52 +286,136 @@ fn run_capture_macos(
 
     let stream_result = match sample_format {
         SampleFormat::I8 => build_macos_stream::<i8>(
-            &device, &config, channels, sample_rate, &source_name,
-            &snapshot, &settings, &capture_state, &fft,
+            &device,
+            &config,
+            channels,
+            sample_rate,
+            &source_name,
+            &snapshot,
+            &settings,
+            &capture_state,
+            &fft,
         ),
         SampleFormat::I16 => build_macos_stream::<i16>(
-            &device, &config, channels, sample_rate, &source_name,
-            &snapshot, &settings, &capture_state, &fft,
+            &device,
+            &config,
+            channels,
+            sample_rate,
+            &source_name,
+            &snapshot,
+            &settings,
+            &capture_state,
+            &fft,
         ),
         SampleFormat::I24 => build_macos_stream::<cpal::I24>(
-            &device, &config, channels, sample_rate, &source_name,
-            &snapshot, &settings, &capture_state, &fft,
+            &device,
+            &config,
+            channels,
+            sample_rate,
+            &source_name,
+            &snapshot,
+            &settings,
+            &capture_state,
+            &fft,
         ),
         SampleFormat::I32 => build_macos_stream::<i32>(
-            &device, &config, channels, sample_rate, &source_name,
-            &snapshot, &settings, &capture_state, &fft,
+            &device,
+            &config,
+            channels,
+            sample_rate,
+            &source_name,
+            &snapshot,
+            &settings,
+            &capture_state,
+            &fft,
         ),
         SampleFormat::I64 => build_macos_stream::<i64>(
-            &device, &config, channels, sample_rate, &source_name,
-            &snapshot, &settings, &capture_state, &fft,
+            &device,
+            &config,
+            channels,
+            sample_rate,
+            &source_name,
+            &snapshot,
+            &settings,
+            &capture_state,
+            &fft,
         ),
         SampleFormat::U8 => build_macos_stream::<u8>(
-            &device, &config, channels, sample_rate, &source_name,
-            &snapshot, &settings, &capture_state, &fft,
+            &device,
+            &config,
+            channels,
+            sample_rate,
+            &source_name,
+            &snapshot,
+            &settings,
+            &capture_state,
+            &fft,
         ),
         SampleFormat::U16 => build_macos_stream::<u16>(
-            &device, &config, channels, sample_rate, &source_name,
-            &snapshot, &settings, &capture_state, &fft,
+            &device,
+            &config,
+            channels,
+            sample_rate,
+            &source_name,
+            &snapshot,
+            &settings,
+            &capture_state,
+            &fft,
         ),
         SampleFormat::U24 => build_macos_stream::<cpal::U24>(
-            &device, &config, channels, sample_rate, &source_name,
-            &snapshot, &settings, &capture_state, &fft,
+            &device,
+            &config,
+            channels,
+            sample_rate,
+            &source_name,
+            &snapshot,
+            &settings,
+            &capture_state,
+            &fft,
         ),
         SampleFormat::U32 => build_macos_stream::<u32>(
-            &device, &config, channels, sample_rate, &source_name,
-            &snapshot, &settings, &capture_state, &fft,
+            &device,
+            &config,
+            channels,
+            sample_rate,
+            &source_name,
+            &snapshot,
+            &settings,
+            &capture_state,
+            &fft,
         ),
         SampleFormat::U64 => build_macos_stream::<u64>(
-            &device, &config, channels, sample_rate, &source_name,
-            &snapshot, &settings, &capture_state, &fft,
+            &device,
+            &config,
+            channels,
+            sample_rate,
+            &source_name,
+            &snapshot,
+            &settings,
+            &capture_state,
+            &fft,
         ),
         SampleFormat::F32 => build_macos_stream::<f32>(
-            &device, &config, channels, sample_rate, &source_name,
-            &snapshot, &settings, &capture_state, &fft,
+            &device,
+            &config,
+            channels,
+            sample_rate,
+            &source_name,
+            &snapshot,
+            &settings,
+            &capture_state,
+            &fft,
         ),
         SampleFormat::F64 => build_macos_stream::<f64>(
-            &device, &config, channels, sample_rate, &source_name,
-            &snapshot, &settings, &capture_state, &fft,
+            &device,
+            &config,
+            channels,
+            sample_rate,
+            &source_name,
+            &snapshot,
+            &settings,
+            &capture_state,
+            &fft,
         ),
         SampleFormat::DsdU8 | SampleFormat::DsdU16 | SampleFormat::DsdU32 => Err(format!(
             "Unsupported sample format for spectrum capture: {sample_format:?}"
@@ -403,7 +485,8 @@ unsafe extern "C-unwind" fn macos_ioproc_callback(
     if buffer_list.mNumberBuffers > 0 {
         let buffer = unsafe { &*buffer_list.mBuffers.as_ptr() };
         let sample_count = buffer.mDataByteSize as usize / std::mem::size_of::<f32>();
-        let samples = unsafe { std::slice::from_raw_parts(buffer.mData as *const f32, sample_count) };
+        let samples =
+            unsafe { std::slice::from_raw_parts(buffer.mData as *const f32, sample_count) };
 
         process_macos_samples(
             samples,
@@ -663,7 +746,8 @@ fn run_capture(
         if sample_window.len() == FFT_SIZE && pending_samples >= UPDATE_STEP {
             pending_samples = 0;
             let (sensitivity, decay) = read_settings(&settings);
-            let bins = compute_spectrum_bins(&sample_window, &fft, BAR_COUNT, sensitivity);
+            let bins =
+                compute_spectrum_bins(&sample_window, &fft, BAR_COUNT, sensitivity, SAMPLE_RATE);
             smooth_bins(&mut smoothed_bins, &bins);
             update_peak_hold(&mut peak_bins, &smoothed_bins, decay);
             update_snapshot(
@@ -673,6 +757,7 @@ fn run_capture(
                 &peak_bins,
                 sensitivity,
                 decay,
+                SAMPLE_RATE,
             );
         }
     }
