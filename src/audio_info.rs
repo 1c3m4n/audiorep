@@ -18,6 +18,12 @@ impl StreamState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct PlaybackSource {
+    pub name: String,
+    pub sample_rate: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct AudioDevice {
     pub card_id: u32,
     pub card_name: String,
@@ -27,6 +33,7 @@ pub struct AudioDevice {
     pub state: StreamState,
     pub sample_rate: Option<u32>,
     pub channels: Option<u32>,
+    pub sources: Vec<PlaybackSource>,
     pub volume: Vec<u8>,
 }
 

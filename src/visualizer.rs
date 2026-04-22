@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::audio_info::{AudioInfo, StreamState};
 use crate::spectrum::{SpectrumSnapshot, spectrum_label_positions};
+use crate::ui::PipewireRateInfo;
 
 pub struct Visualizer;
 
@@ -21,16 +22,19 @@ impl Visualizer {
         frame: &mut Frame,
         audio_info: &AudioInfo,
         spectrum: &SpectrumSnapshot,
+        rate_info: Option<&PipewireRateInfo>,
+        rate_status: Option<&str>,
         selected_index: usize,
         show_hidden: bool,
     ) {
+        let footer_height = if frame.area().width < 120 { 4 } else { 3 };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
             .constraints([
                 Constraint::Length(3),
                 Constraint::Min(10),
-                Constraint::Length(3),
+                Constraint::Length(footer_height),
             ])
             .split(frame.area());
 
@@ -43,7 +47,7 @@ impl Visualizer {
             selected_index,
             show_hidden,
         );
-        self.render_footer(frame, chunks[2], show_hidden);
+        self.render_footer(frame, chunks[2], show_hidden, rate_info, rate_status);
     }
 
     fn render_body(
@@ -100,7 +104,7 @@ impl Visualizer {
         let devices = audio_info.visible_devices(show_hidden);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Length(4); devices.len().max(1)])
+            .constraints(vec![Constraint::Length(5); devices.len().max(1)])
             .split(area);
 
         if devices.is_empty() {
@@ -129,15 +133,31 @@ impl Visualizer {
                 StreamState::Unknown(_) => Color::Gray,
             };
 
+            let sources = if device.sources.is_empty() {
+                "Sources: none".to_string()
+            } else {
+                let names = device
+                    .sources
+                    .iter()
+                    .map(|source| match source.sample_rate {
+                        Some(rate) => format!("{} ({} Hz)", source.name, rate),
+                        None => source.name.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("Sources: {names}")
+            };
+
             let text = format!(
-                "Card {}: {} | PCM: {} | Sub: {} | State: {:?} | {} Hz | {} ch",
+                "Card {}: {} | PCM: {} | Sub: {} | State: {:?} | {} Hz | {} ch\n{}",
                 device.card_id,
                 device.card_name,
                 device.pcm_id,
                 device.sub_id,
                 device.state,
                 device.sample_rate.unwrap_or(0),
-                device.channels.unwrap_or(0)
+                device.channels.unwrap_or(0),
+                sources,
             );
 
             let block = Block::default()
@@ -208,21 +228,62 @@ impl Visualizer {
         frame.render_widget(labels, chunks[2]);
     }
 
-    fn render_footer(&self, frame: &mut Frame, area: Rect, show_hidden: bool) {
+    fn render_footer(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        show_hidden: bool,
+        rate_info: Option<&PipewireRateInfo>,
+        rate_status: Option<&str>,
+    ) {
         let hidden_label = if show_hidden {
             "hide stopped"
         } else {
             "show stopped"
         };
+        let rate_label = format_rate_info(rate_info);
+        let status_label = rate_status.unwrap_or("");
         let text = format!(
-            "q: quit | ↑/↓: navigate | h: {} | +/-: sensitivity | [ ]: decay | r: refresh",
-            hidden_label
+            "q: quit | ↑/↓: navigate | h: {} | +/-: sensitivity | [ ]: decay | j/k: rate | {}{}{}",
+            hidden_label,
+            rate_label,
+            if status_label.is_empty() { "" } else { " | " },
+            status_label,
         );
+        let text_area = centered_rect(area, 86);
         let paragraph = Paragraph::new(text)
             .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
             .block(Block::default().borders(Borders::ALL));
 
-        frame.render_widget(paragraph, area);
+        frame.render_widget(paragraph, text_area);
+    }
+}
+
+fn centered_rect(area: Rect, max_width: u16) -> Rect {
+    let width = area.width.min(max_width).max(1);
+    let left = area.x + area.width.saturating_sub(width) / 2;
+
+    Rect {
+        x: left,
+        y: area.y,
+        width,
+        height: area.height,
+    }
+}
+
+fn format_rate_info(rate_info: Option<&PipewireRateInfo>) -> String {
+    match rate_info {
+        Some(rate_info) => format!(
+            "rate: {} Hz | forced: {}",
+            rate_info.current_rate,
+            if rate_info.forced_rate == 0 {
+                "auto".to_string()
+            } else {
+                format!("{} Hz", rate_info.forced_rate)
+            }
+        ),
+        None => "rate: unavailable".to_string(),
     }
 }
 

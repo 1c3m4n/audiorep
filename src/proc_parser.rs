@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
-use crate::audio_info::{AudioDevice, AudioInfo, StreamState};
+use crate::audio_info::{AudioDevice, AudioInfo, PlaybackSource, StreamState};
 use crate::error::{AudioError, Result};
 
 const PROC_ASOUND: &str = "/proc/asound";
@@ -43,6 +44,8 @@ impl ProcParser {
         if devices.is_empty() {
             return Err(AudioError::NoDevices);
         }
+
+        Self::attach_playback_sources(&mut devices);
 
         Ok(AudioInfo { devices })
     }
@@ -131,6 +134,7 @@ impl ProcParser {
                         state: status.state,
                         sample_rate: hw_params.sample_rate,
                         channels: hw_params.channels,
+                        sources: Vec::new(),
                         volume: Vec::new(),
                     });
                 }
@@ -234,6 +238,125 @@ impl ProcParser {
             channels,
         })
     }
+
+    fn attach_playback_sources(devices: &mut [AudioDevice]) {
+        let sink_cards = match Self::read_sink_cards() {
+            Ok(sink_cards) => sink_cards,
+            Err(_) => return,
+        };
+        let sink_inputs = match Self::read_sink_inputs() {
+            Ok(sink_inputs) => sink_inputs,
+            Err(_) => return,
+        };
+
+        for device in devices.iter_mut().filter(|device| device.is_playback) {
+            device.sources = sink_inputs
+                .iter()
+                .filter(|input| sink_cards.get(&input.sink_index) == Some(&device.card_id))
+                .map(|input| PlaybackSource {
+                    name: input.name.clone(),
+                    sample_rate: input.sample_rate,
+                })
+                .collect();
+        }
+    }
+
+    fn read_sink_cards() -> std::result::Result<std::collections::HashMap<u32, u32>, ()> {
+        let output = Self::run_pactl(&["list", "sinks"]).map_err(|_| ())?;
+        let mut sink_cards = std::collections::HashMap::new();
+        let mut current_sink = None;
+
+        for line in output.lines() {
+            let trimmed = line.trim();
+
+            if let Some(index) = trimmed.strip_prefix("Sink #") {
+                current_sink = index.parse::<u32>().ok();
+                continue;
+            }
+
+            if let Some(card) = trimmed.strip_prefix("api.alsa.pcm.card = ") {
+                if let (Some(sink_index), Some(card_id)) =
+                    (current_sink, card.trim_matches('"').parse::<u32>().ok())
+                {
+                    sink_cards.insert(sink_index, card_id);
+                }
+            }
+        }
+
+        Ok(sink_cards)
+    }
+
+    fn read_sink_inputs() -> std::result::Result<Vec<SinkInputInfo>, ()> {
+        let output = Self::run_pactl(&["list", "sink-inputs"]).map_err(|_| ())?;
+        Ok(Self::parse_sink_inputs(&output))
+    }
+
+    fn run_pactl(args: &[&str]) -> std::result::Result<String, ()> {
+        let output = Command::new("pactl").args(args).output().map_err(|_| ())?;
+        if !output.status.success() {
+            return Err(());
+        }
+
+        String::from_utf8(output.stdout).map_err(|_| ())
+    }
+
+    fn parse_sink_inputs(content: &str) -> Vec<SinkInputInfo> {
+        let mut inputs = Vec::new();
+        let mut current: Option<SinkInputInfo> = None;
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if trimmed.starts_with("Sink Input #") {
+                if let Some(input) = current.take() {
+                    inputs.push(input);
+                }
+                current = Some(SinkInputInfo::default());
+                continue;
+            }
+
+            let Some(input) = current.as_mut() else {
+                continue;
+            };
+
+            if let Some(sink) = trimmed.strip_prefix("Sink: ") {
+                input.sink_index = sink.parse().unwrap_or(0);
+            } else if let Some(spec) = trimmed.strip_prefix("Sample Specification: ") {
+                input.sample_rate = Self::parse_sample_rate(spec);
+            } else if let Some(name) = trimmed.strip_prefix("media.name = ") {
+                input.media_name = Some(name.trim_matches('"').to_string());
+            } else if let Some(name) = trimmed.strip_prefix("application.name = ") {
+                input.app_name = Some(name.trim_matches('"').to_string());
+            } else if let Some(name) = trimmed.strip_prefix("node.name = ") {
+                input.node_name = Some(name.trim_matches('"').to_string());
+            } else if let Some(name) = trimmed.strip_prefix("application.process.binary = ") {
+                input.binary_name = Some(name.trim_matches('"').to_string());
+            }
+        }
+
+        if let Some(input) = current.take() {
+            inputs.push(input);
+        }
+
+        inputs
+            .into_iter()
+            .filter(|input| input.sink_index != 0)
+            .map(|mut input| {
+                input.name = input.display_name();
+                input
+            })
+            .collect()
+    }
+
+    fn parse_sample_rate(spec: &str) -> Option<u32> {
+        spec.split_whitespace()
+            .find(|part| part.ends_with("Hz"))
+            .and_then(|part| part.trim_end_matches("Hz").parse().ok())
+    }
 }
 
 #[derive(Debug)]
@@ -245,6 +368,55 @@ struct StatusInfo {
 struct HwParamsInfo {
     sample_rate: Option<u32>,
     channels: Option<u32>,
+}
+
+#[derive(Debug, Default)]
+struct SinkInputInfo {
+    sink_index: u32,
+    sample_rate: Option<u32>,
+    media_name: Option<String>,
+    app_name: Option<String>,
+    node_name: Option<String>,
+    binary_name: Option<String>,
+    name: String,
+}
+
+impl SinkInputInfo {
+    fn display_name(&self) -> String {
+        let media_name = self
+            .media_name
+            .as_deref()
+            .filter(|name| !Self::is_generic_name(name));
+        let app_name = self
+            .app_name
+            .as_deref()
+            .or(self.node_name.as_deref())
+            .or(self.binary_name.as_deref());
+
+        match (app_name, media_name) {
+            (Some(app), Some(media)) if !Self::same_name(app, media) => {
+                format!("{app}: {media}")
+            }
+            (_, Some(media)) => media.to_string(),
+            (Some(app), None) => app.to_string(),
+            (None, None) => self
+                .media_name
+                .as_deref()
+                .unwrap_or("Unknown source")
+                .to_string(),
+        }
+    }
+
+    fn is_generic_name(name: &str) -> bool {
+        matches!(
+            name.trim().to_ascii_lowercase().as_str(),
+            "playback" | "audio stream"
+        )
+    }
+
+    fn same_name(left: &str, right: &str) -> bool {
+        left.trim().eq_ignore_ascii_case(right.trim())
+    }
 }
 
 #[cfg(test)]
@@ -272,6 +444,32 @@ mod tests {
     fn test_is_playback_pcm() {
         assert!(ProcParser::is_playback_pcm("pcm0p"));
         assert!(!ProcParser::is_playback_pcm("pcm0c"));
+    }
+
+    #[test]
+    fn test_parse_sink_inputs() {
+        let content = "Sink Input #83\nSink: 61\nSample Specification: float32le 2ch 48000Hz\nProperties:\n\tmedia.name = \"Firefox\"\n\tapplication.name = \"Firefox\"\n\n";
+        let inputs = ProcParser::parse_sink_inputs(content);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].sink_index, 61);
+        assert_eq!(inputs[0].sample_rate, Some(48000));
+        assert_eq!(inputs[0].name, "Firefox");
+    }
+
+    #[test]
+    fn test_parse_sink_inputs_prefers_app_name_over_playback() {
+        let content = "Sink Input #83\nSink: 61\nSample Specification: float32le 2ch 48000Hz\nProperties:\n\tapplication.name = \"Chromium\"\n\tapplication.process.binary = \"chromium\"\n\tmedia.name = \"Playback\"\n\tnode.name = \"Chromium\"\n\n";
+        let inputs = ProcParser::parse_sink_inputs(content);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].name, "Chromium");
+    }
+
+    #[test]
+    fn test_parse_sink_inputs_combines_app_and_media_name() {
+        let content = "Sink Input #83\nSink: 61\nSample Specification: float32le 2ch 48000Hz\nProperties:\n\tapplication.name = \"Firefox\"\n\tmedia.name = \"YouTube\"\n\n";
+        let inputs = ProcParser::parse_sink_inputs(content);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].name, "Firefox: YouTube");
     }
 
     #[test]
