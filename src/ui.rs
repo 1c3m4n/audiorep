@@ -54,6 +54,8 @@ pub struct Ui {
     diagnostic_status: Option<(String, Instant)>,
     last_refresh: Instant,
     refresh_interval: Duration,
+    #[cfg(target_os = "macos")]
+    cached_audio_info: Option<crate::audio_info::AudioInfo>,
 }
 
 impl Ui {
@@ -68,6 +70,8 @@ impl Ui {
             diagnostic_status: None,
             last_refresh: Instant::now(),
             refresh_interval: Duration::from_millis(500),
+            #[cfg(target_os = "macos")]
+            cached_audio_info: None,
         }
     }
 
@@ -92,6 +96,21 @@ impl Ui {
     }
 
     fn run_app<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            // On macOS, parse once and cache to avoid repeated system_profiler calls
+            if self.cached_audio_info.is_none() {
+                match self.parser.parse_audio_info() {
+                    Ok(info) => self.cached_audio_info = Some(info),
+                    Err(error) => {
+                        let message = format!("audio probe failed: {}", error);
+                        warn!("{}", message);
+                        self.set_diagnostic_status(message);
+                    }
+                }
+            }
+        }
+
         let mut audio_info = match self.parser.parse_audio_info() {
             Ok(info) => info,
             Err(error) => {
@@ -107,6 +126,7 @@ impl Ui {
         loop {
             let has_input = event::poll(Duration::from_millis(16))?;
 
+            #[cfg(not(target_os = "macos"))]
             if self.should_refresh() {
                 match self.parser.parse_audio_info() {
                     Ok(info) => {
@@ -118,6 +138,14 @@ impl Ui {
                         warn!("{}", message);
                         self.set_diagnostic_status(message);
                     }
+                }
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                // On macOS, use cached info to avoid system_profiler stutter
+                if let Some(ref cached) = self.cached_audio_info {
+                    audio_info = cached.clone();
                 }
             }
 
